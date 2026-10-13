@@ -13,5 +13,9 @@ tu zero - simple vpn protocol, wrote on python ()
 usage:
 `tuzero -c config.json`
 
-стандарт ссылок:<br>
-```tuzero://token@host:port?security=sec&key=key&obfuscation=obfs#de-auto```
+> [!CAUTION]
+> #### Не разглашайте свой файл конфигурации!
+> Любой, у кого будет этот файл, сможет расшифровать ваш трафик!
+
+> [!IMPORTANT]
+> #### Приблизительно в версии 0.12 конфиги без шифрования будут блокироваться. Нежелательно их использовать на постоянной основе
