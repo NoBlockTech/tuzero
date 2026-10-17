@@ -102,7 +102,7 @@ def secure_data(config: dict, data: bytes):
     match config["security"]:
         case "aes256":
             aes = AESGCM(bytes.fromhex(config["user"]["key"]))
-            nonce = os.urandom(12)
+            nonce = os.urandom(8)
             ciphertext = aes.encrypt(
                 nonce,
                 data,
@@ -124,8 +124,8 @@ def unsecure_data(config: dict, data: bytes):
             if isinstance(key, str):
                 key = bytes.fromhex(key)
 
-            nonce = data[:12]
-            ciphertext = data[12:]
+            nonce = data[:8]
+            ciphertext = data[8:]
 
             aes = AESGCM(key)
 
@@ -197,7 +197,7 @@ def _pack_data_ws(data: bytes, config: dict, flow: Flow):
         ],
         "data" : secure_data(config, data).hex()
     }
-    return json.dumps(packed)
+    return json.dumps(packed, separators=(",",":"))
 
 http_strings = (" ".join("abcdefghigklmnopqrstuvwxyzQWERTYUIOPASDFGHJKLZXCVBNM------")).split(" ")
 def _pack_data_http(send_data: bytes, config: dict, flow: Flow):
@@ -241,14 +241,14 @@ def _pack_data_http(send_data: bytes, config: dict, flow: Flow):
 
     match obfs["tu-data"]["position"]:
         case "body":
-            tudt = json.dumps({"to":[flow.dst.host, flow.dst.port], "proto":flow.protocol, "token":config["user"]["token"]})
+            tudt = json.dumps({"to":[flow.dst.host, flow.dst.port], "proto":flow.protocol, "token":config["user"]["token"]}, separators=(",",":"))
             if obfs["tu-data"]["encrypt"] == True:
                 tudt = secure_data(config, tudt)
             if isinstance(tudt, bytes):
                 tudt = tudt.hex()
             body[obfs["tu-data"]["name"]] = tudt
         case "header":
-            tudt = json.dumps({"to":[flow.dst.host, flow.dst.port], "proto":flow.protocol, "token":config["user"]["token"]})
+            tudt = json.dumps({"to":[flow.dst.host, flow.dst.port], "proto":flow.protocol, "token":config["user"]["token"]}, separators=(",",":"))
             if obfs["tu-data"]["encrypt"] == True:
                 tudt = secure_data(config, tudt)
             if isinstance(tudt, bytes):
@@ -258,7 +258,7 @@ def _pack_data_http(send_data: bytes, config: dict, flow: Flow):
                 tudt
             ))
 
-    outputjson = json.dumps(body)
+    outputjson = json.dumps(body, separators=(",",":"))
 
     outputjson = outputjson.encode()
     headers.append(("Content-Length", str(len(outputjson))))
@@ -397,7 +397,7 @@ if __name__ == "__main__":
     print("\n\n ##### tcp packet DECODED")
     print(_decode_data_tcp(tcp_packed, example_c))
 
-    print(" ##### websocket packet:")
+    print("\n\n ##### websocket packet:")
     print(ws_packed)
     print("\n\n ##### websocket packet DECODED")
     print(_decode_data_ws(ws_packed, example_c))
