@@ -40,10 +40,6 @@ def check_client_config(data: dict):
                 if data["obfuscation"]["tu-data"]["position"] not in ("body", "header"): raise BADCONFIG()
                 if type(data["obfuscation"]["tu-data"]["name"]) is not str: raise BADCONFIG()
                 if data["obfuscation"]["tu-data"]["encrypt"] not in (True, False): raise BADCONFIG()
-                if not isinobj(("position", "name", "encrypt"), data["obfuscation"]["padding-data"]): raise BADCONFIG()
-                if data["obfuscation"]["padding-data"]["position"] not in ("body", "header"): raise BADCONFIG()
-                if type(data["obfuscation"]["padding-data"]["name"]) is not str: raise BADCONFIG()
-                if data["obfuscation"]["padding-data"]["encrypt"] not in (True, False): raise BADCONFIG()
                 if data["obfuscation"]["transport"] in ("http"):
                     if not isinobj(("method",), data["obfuscation"]["extra"]): raise BADCONFIG()
                     if data["obfuscation"]["extra"]["method"] not in ("post", "get", "head", "delete", "put"): raise BADCONFIG()
@@ -80,10 +76,6 @@ def check_server_config(data: dict):
                 if data["obfuscation"]["tu-data"]["position"] not in ("body", "header"): raise BADCONFIG()
                 if type(data["obfuscation"]["tu-data"]["name"]) is not str: raise BADCONFIG()
                 if data["obfuscation"]["tu-data"]["encrypt"] not in (True, False): raise BADCONFIG()
-                if not isinobj(("position", "name", "encrypt"), data["obfuscation"]["padding-data"]): raise BADCONFIG()
-                if data["obfuscation"]["padding-data"]["position"] not in ("body", "header"): raise BADCONFIG()
-                if type(data["obfuscation"]["padding-data"]["name"]) is not str: raise BADCONFIG()
-                if data["obfuscation"]["padding-data"]["encrypt"] not in (True, False): raise BADCONFIG()
                 if data["obfuscation"]["transport"] in ("http",):
                     if not isinobj(("method",), data["obfuscation"]["extra"]): raise BADCONFIG()
                     if data["obfuscation"]["extra"]["method"] not in ("post", "get", "head", "delete", "put"): raise BADCONFIG()
@@ -206,7 +198,7 @@ def _pack_data_http(send_data: bytes, config: dict, flow: Flow):
                 "".join(http_strings[12:24])
             ))
 
-    body = ""
+    body = dict()
 
     match obfs["data"]["position"]:
         case "body":
@@ -215,8 +207,7 @@ def _pack_data_http(send_data: bytes, config: dict, flow: Flow):
                 dt = secure_data(config, dt)
             if isinstance(dt, bytes):
                 dt = dt.hex()
-            body += dt
-            body += obfs["data"]["name"]
+            body[obfs["data"]["name"]] = dt
         case "header":
             dt = send_data
             if obfs["data"]["encrypt"] == True:
@@ -235,8 +226,7 @@ def _pack_data_http(send_data: bytes, config: dict, flow: Flow):
                 tudt = secure_data(config, tudt)
             if isinstance(tudt, bytes):
                 tudt = tudt.hex()
-            body += tudt
-            body += obfs["tu-data"]["name"]
+            body[obfs["tu-data"]["name"]] = tudt
         case "header":
             tudt = json.dumps({"to":[flow.dst.host, flow.dst.port], "token": config["user"]["token"]})
             if obfs["tu-data"]["encrypt"] == True:
@@ -248,40 +238,26 @@ def _pack_data_http(send_data: bytes, config: dict, flow: Flow):
                 tudt
             ))
 
-    match obfs["padding-data"]["position"]:
-        case "body":
-            tudt = str(psize)
-            if obfs["padding-data"]["encrypt"] == True:
-                tudt = secure_data(config, tudt)
-            if isinstance(tudt, bytes):
-                tudt = tudt.hex()
-            body += tudt
-            body += obfs["padding-data"]["name"]
-        case "header":
-            tudt = str(psize)
-            if obfs["padding-data"]["encrypt"] == True:
-                tudt = secure_data(config, tudt)
-            if isinstance(tudt, bytes):
-                tudt = tudt.hex()
-            headers.append((
-                obfs["padding-data"]["name"],
-                tudt
-            ))
+    outputjson = json.dumps(body)
 
-    body = body.encode()
-    headers.append(("Content-Length", str(len(body))))
+    outputjson = outputjson.encode()
+    headers.append(("Content-Length", str(len(outputjson))))
 
     random.shuffle(headers)
     
     conn = h11.Connection(h11.CLIENT)
 
+    finalheaders = list()
+    for header in headers:
+        finalheaders.append((header[0].lower(), header[1].lower()))
+
     data = conn.send(h11.Request(
         method=method,
         target=path,
-        headers=headers,
+        headers=finalheaders,
     ))
 
-    data += conn.send(h11.Data(data=body))
+    data += conn.send(h11.Data(data=outputjson))
     data += conn.send(h11.EndOfMessage())
 
     return data
@@ -341,15 +317,38 @@ def _decode_data_http(data: bytes, config: dict):
         elif event is h11.NEED_DATA:
             raise ConnectionError("NEED_DATA")
 
-    body = bytes(body)
+    body = body.decode()
+    bjson = json.loads(body)
 
-    return method, path, headers, body
+    obfs = config["obfuscation"]
+
+    decoded_data = None
+    decoded_tudata = None
+
+    match obfs["data"]["position"]:
+        case "body":
+            decoded_data = bjson[obfs["data"]["name"]].encode()
+        case "header":
+            decoded_data = headers[obfs["data"]["name"].lower().encode()]
+
+    match obfs["tu-data"]["position"]:
+        case "body":
+            decoded_tudata = bjson[obfs["tu-data"]["name"]].encode()
+        case "header":
+            decoded_tudata = headers[obfs["tu-data"]["name"].lower().encode()]
+
+    decoded_tudata = json.loads(unsecure_data(config, bytes.fromhex(decoded_tudata.decode())).decode())
+    decoded_data = unsecure_data(config, bytes.fromhex(decoded_data.decode()))
+
+    return decoded_data, decoded_tudata
+
 def _decode_data_ws(data: bytes, config: dict): 
     return _decode_data_tcp(data, config)
 
 if __name__ == "__main__":
 
     example_c = {'server': {'host': 'localhost', 'port': 2487}, 'obfuscation': {'transport': 'http', 'padding': {'min': 2, 'max': 16}, 'data': {'position': 'body', 'name': 'TU-Data', 'encrypt': True}, 'tu-data': {'position': 'header', 'name': 'TU-Cache', 'encrypt': True}, 'padding-data': {'position': 'header', 'name': 'Session', 'encrypt': True}, 'extra': {'method': 'get'}}, 'security': 'aes256', 'user': {'token': '758c3df3-38d1-4b2a-8921-cbb9fb6acc1b', 'key': '64c0e751444e37176a3c8395407ad6cf17fa5c92f273a5d9372ef88534f24adf'}}
+    check_client_config(example_c)
 
     DATA_TO_PACK = "hello, world!".encode()
 
