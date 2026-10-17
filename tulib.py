@@ -6,6 +6,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import os, random
 import h11
 import json
+import base64
 
 class BADCONFIG(Exception): pass
 
@@ -28,7 +29,7 @@ def check_client_config(data: dict):
                 if not isinobj(("min", "max"), data["obfuscation"]["padding"]): raise BADCONFIG()
                 if not type(data["obfuscation"]["padding"]["min"]) is int: raise BADCONFIG()
                 if not type(data["obfuscation"]["padding"]["max"]) is int: raise BADCONFIG()
-                if not (data["obfuscation"]["padding"]["min"] < data["obfuscation"]["padding"]["max"]): raise BADCONFIG()
+                if not (data["obfuscation"]["padding"]["min"] <= data["obfuscation"]["padding"]["max"]): raise BADCONFIG()
                 if not (data["obfuscation"]["padding"]["min"] >= 0): raise BADCONFIG()
                 if not (data["obfuscation"]["padding"]["max"] >= 0): raise BADCONFIG()
             if data["obfuscation"]["transport"] == "http":
@@ -181,8 +182,8 @@ def _pack_data_tcp(data: bytes, config: dict, flow: Flow):
     proto = flow.protocol.encode("ascii")
     host = flow.dst.host.encode("ascii")
     port = flow.dst.port.to_bytes(2)
-    packed = secure_data(config, proto + len(host).to_bytes(3) + host + port + data)
-     # 3 bytes proto + 3 bytes host length + X bytes host + 2 bytes port + X bytes data
+    packed = secure_data(config, proto + len(host).to_bytes(1) + host + port + data)
+     # 3 bytes proto + 1 byte host length + X bytes host + 2 bytes port + X bytes data
     return packed
 
 def _pack_data_ws(data: bytes, config: dict, flow: Flow):
@@ -190,12 +191,12 @@ def _pack_data_ws(data: bytes, config: dict, flow: Flow):
     host = flow.dst.host.encode("ascii")
     port = flow.dst.port.to_bytes(2)
     packed = {
-        "token" : secure_data(config, proto).hex(),
+        "token" : base64.urlsafe_b64encode(secure_data(config, proto)).decode().rstrip("="),
         "auth" : [
-            secure_data(config, host).hex(),
-            secure_data(config, port).hex()
+            base64.urlsafe_b64encode(secure_data(config, host)).decode().rstrip("="),
+            base64.urlsafe_b64encode(secure_data(config, port)).decode().rstrip("=")
         ],
-        "data" : secure_data(config, data).hex()
+        "data" : base64.urlsafe_b64encode(secure_data(config, data)).decode().rstrip("=")
     }
     return json.dumps(packed, separators=(",",":"))
 
@@ -226,14 +227,14 @@ def _pack_data_http(send_data: bytes, config: dict, flow: Flow):
             if obfs["data"]["encrypt"] == True:
                 dt = secure_data(config, dt)
             if isinstance(dt, bytes):
-                dt = dt.hex()
+                dt = base64.b85encode(dt).decode()
             body[obfs["data"]["name"]] = dt
         case "header":
             dt = send_data
             if obfs["data"]["encrypt"] == True:
                 dt = secure_data(config, dt)
             if isinstance(dt, bytes):
-                dt = dt.hex()
+                dt = base64.urlsafe_b64encode(dt).decode()
             headers.append((
                 obfs["data"]["name"],
                 dt
@@ -245,14 +246,14 @@ def _pack_data_http(send_data: bytes, config: dict, flow: Flow):
             if obfs["tu-data"]["encrypt"] == True:
                 tudt = secure_data(config, tudt)
             if isinstance(tudt, bytes):
-                tudt = tudt.hex()
+                tudt = base64.b85encode(tudt).decode()
             body[obfs["tu-data"]["name"]] = tudt
         case "header":
             tudt = json.dumps({"to":[flow.dst.host, flow.dst.port], "proto":flow.protocol, "token":config["user"]["token"]}, separators=(",",":"))
             if obfs["tu-data"]["encrypt"] == True:
                 tudt = secure_data(config, tudt)
             if isinstance(tudt, bytes):
-                tudt = tudt.hex()
+                tudt = base64.urlsafe_b64encode(tudt).decode()
             headers.append((
                 obfs["tu-data"]["name"],
                 tudt
@@ -269,7 +270,7 @@ def _pack_data_http(send_data: bytes, config: dict, flow: Flow):
 
     finalheaders = list()
     for header in headers:
-        finalheaders.append((header[0].lower(), header[1].lower()))
+        finalheaders.append((header[0].lower(), header[1]))
 
     data = conn.send(h11.Request(
         method=method,
@@ -294,13 +295,13 @@ def decode_data(data: bytes, config: dict):
 
 def _decode_data_tcp(data: bytes, config: dict):
     # from _pack_data_tcp() upper
-     # 3 bytes proto + 3 bytes host length + X bytes host + 2 bytes port + X bytes data
+     # 3 bytes proto + 1 byte host length + X bytes host + 2 bytes port + X bytes data
     data = unsecure_data(config, data)
     proto = data[0:3].decode()
-    hostlength = int.from_bytes(data[3:6])
-    host = data[6:hostlength+6].decode()
-    port = int.from_bytes(data[hostlength+6:hostlength+8])
-    decoded = data[hostlength+8:]
+    hostlength = int.from_bytes(data[3:4])
+    host = data[4:hostlength+4].decode()
+    port = int.from_bytes(data[hostlength+4:hostlength+6])
+    decoded = data[hostlength+6:]
 
     return host, port, proto, decoded
 
@@ -309,10 +310,10 @@ def _decode_data_ws(data: bytes, config: dict):
         data = data.encode()
 
     djson = json.loads(data.decode())
-    decoded = unsecure_data(config, bytes.fromhex(djson["data"]))
-    host = unsecure_data(config, bytes.fromhex(djson["auth"][0])).decode()
-    port = int.from_bytes(unsecure_data(config, bytes.fromhex(djson["auth"][1])))
-    proto = unsecure_data(config, bytes.fromhex(djson["token"])).decode()
+    decoded = unsecure_data(config, base64.urlsafe_b64decode(djson["data"] + "=" * (-len(djson["data"]) % 4)))
+    host = unsecure_data(config, base64.urlsafe_b64decode(djson["auth"][0] + "=" * (-len(djson["auth"][0]) % 4))).decode()
+    port = int.from_bytes(unsecure_data(config, base64.urlsafe_b64decode(djson["auth"][1] + "=" * (-len(djson["auth"][1]) % 4))))
+    proto = unsecure_data(config, base64.urlsafe_b64decode(djson["token"] + "=" * (-len(djson["token"]) % 4))).decode()
     return host, port, proto, decoded
 
 def _decode_data_http(data: bytes, config: dict): 
@@ -354,20 +355,27 @@ def _decode_data_http(data: bytes, config: dict):
     match obfs["data"]["position"]:
         case "body":
             decoded_data = bjson[obfs["data"]["name"]].encode()
+            decoded_data = base64.b85decode(decoded_data.decode())
         case "header":
             decoded_data = headers[obfs["data"]["name"].lower().encode()]
+            decoded_data = base64.urlsafe_b64decode(decoded_data.decode())
 
     match obfs["tu-data"]["position"]:
         case "body":
             decoded_tudata = bjson[obfs["tu-data"]["name"]].encode()
+            decoded_tudata = base64.b85decode(decoded_tudata.decode())
         case "header":
             decoded_tudata = headers[obfs["tu-data"]["name"].lower().encode()]
+            decoded_tudata = base64.urlsafe_b64decode(decoded_tudata.decode())
 
-    decoded_tudata = bytes.fromhex(decoded_tudata.decode())
-    decoded_data = bytes.fromhex(decoded_data.decode())
+    if obfs["tu-data"]["encrypt"]:
+        decoded_tudata = unsecure_data(config, decoded_tudata)
 
-    decoded_tudata = unsecure_data(config, decoded_tudata).decode()
-    decoded = unsecure_data(config, decoded_data)
+    if obfs["data"]["encrypt"]:
+        decoded_data = unsecure_data(config, decoded_data)
+
+    decoded_tudata = decoded_tudata.decode()
+    decoded = decoded_data
 
     decoded_tudata = json.loads(decoded_tudata)
 
