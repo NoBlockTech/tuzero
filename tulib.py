@@ -97,6 +97,8 @@ def secure_data(config: dict, data: bytes):
     if isinstance(data, str):
         data = data.encode()
 
+    encoded = data
+
     match config["security"]:
         case "aes256":
             aes = AESGCM(bytes.fromhex(config["user"]["key"]))
@@ -106,27 +108,32 @@ def secure_data(config: dict, data: bytes):
                 data,
                 None
             )
-            return nonce + ciphertext
-        case _:
-            return bytes(data)
+            encoded = nonce + ciphertext
+
+    return encoded
 
 def unsecure_data(config: dict, data: bytes):
     if isinstance(data, str):
         data = data.encode()
-    key = config["user"]["key"]
-    if isinstance(key, str):
-        key = bytes.fromhex(key)
 
-    nonce = data[:12]
-    ciphertext = data[12:]
+    decoded = data
 
-    aes = AESGCM(key)
+    match config["security"]:
+        case "aes256":
+            key = config["user"]["key"]
+            if isinstance(key, str):
+                key = bytes.fromhex(key)
 
-    decoded = aes.decrypt(
-        nonce,
-        ciphertext,
-        None
-    )
+            nonce = data[:12]
+            ciphertext = data[12:]
+
+            aes = AESGCM(key)
+
+            decoded = aes.decrypt(
+                nonce,
+                ciphertext,
+                None
+            )
 
     return decoded
 
@@ -174,10 +181,13 @@ def _pack_data_tcp(data: bytes, config: dict, flow: Flow):
     proto = flow.protocol.encode("ascii")
     host = flow.dst.host.encode("ascii")
     port = flow.dst.port.to_bytes(2)
-    data = secure_data(config, data)
-    packed = proto + len(host).to_bytes(3) + host + port + data
+    data = data
+    packed = secure_data(config, proto + len(host).to_bytes(3) + host + port + data)
      # 3 bytes proto + 3 bytes host length + X bytes host + 2 bytes port + X bytes data
     return packed
+
+def _pack_data_ws(data: bytes, config: dict, flow: Flow):
+    _pack_data_tcp(data, config, flow)
 
 http_strings = (" ".join("abcdefghigklmnopqrstuvwxyzQWERTYUIOPASDFGHJKLZXCVBNM------")).split(" ")
 def _pack_data_http(send_data: bytes, config: dict, flow: Flow):
@@ -262,10 +272,6 @@ def _pack_data_http(send_data: bytes, config: dict, flow: Flow):
 
     return data
 
-def _pack_data_ws(data: bytes, config: dict, flow: Flow):
-    return _pack_data_tcp(data, config, flow)
-     # will be changed in the future
-
 def decode_data(data: bytes, config: dict):
     transport = suggest_transport(config)
     match transport:
@@ -279,16 +285,18 @@ def decode_data(data: bytes, config: dict):
 def _decode_data_tcp(data: bytes, config: dict):
     # from _pack_data_tcp() upper
      # 3 bytes proto + 3 bytes host length + X bytes host + 2 bytes port + X bytes data
+    data = unsecure_data(config, data)
     proto = data[0:3]
     hostlength = int.from_bytes(data[3:6])
     host = data[6:hostlength+6]
     port = int.from_bytes(data[hostlength+6:hostlength+8])
     decoded = data[hostlength+8:]
 
-    if config["security"] is not None:
-        decoded = unsecure_data(config, decoded)
-
     return proto, hostlength, host, port, decoded
+
+def _decode_data_ws(data: bytes, config: dict): 
+    return _decode_data_tcp(data, config)
+
 def _decode_data_http(data: bytes, config: dict): 
     if isinstance(data, str):
         data = data.encode()
@@ -337,16 +345,17 @@ def _decode_data_http(data: bytes, config: dict):
         case "header":
             decoded_tudata = headers[obfs["tu-data"]["name"].lower().encode()]
 
-    decoded_tudata = json.loads(unsecure_data(config, bytes.fromhex(decoded_tudata.decode())).decode())
-    decoded_data = unsecure_data(config, bytes.fromhex(decoded_data.decode()))
+    decoded_tudata = bytes.fromhex(decoded_tudata.decode())
+    decoded_data = bytes.fromhex(decoded_data.decode())
+
+    decoded_tudata = unsecure_data(config, decoded_tudata).decode()
+    decoded_data = unsecure_data(config, decoded_data)
+
+    decoded_tudata = json.loads(decoded_tudata)
 
     return decoded_data, decoded_tudata
 
-def _decode_data_ws(data: bytes, config: dict): 
-    return _decode_data_tcp(data, config)
-
 if __name__ == "__main__":
-
     example_c = {'server': {'host': 'localhost', 'port': 2487}, 'obfuscation': {'transport': 'http', 'padding': {'min': 2, 'max': 16}, 'data': {'position': 'body', 'name': 'TU-Data', 'encrypt': True}, 'tu-data': {'position': 'header', 'name': 'TU-Cache', 'encrypt': True}, 'padding-data': {'position': 'header', 'name': 'Session', 'encrypt': True}, 'extra': {'method': 'get'}}, 'security': 'aes256', 'user': {'token': '758c3df3-38d1-4b2a-8921-cbb9fb6acc1b', 'key': '64c0e751444e37176a3c8395407ad6cf17fa5c92f273a5d9372ef88534f24adf'}}
     check_client_config(example_c)
 
