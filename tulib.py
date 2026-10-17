@@ -118,7 +118,9 @@ def secure_data(config: dict, data: bytes):
         case _:
             return bytes(data)
 
-def connect(to, transport):
+def connect(config):
+    transport = suggest_transport(config)
+    to = (config["server"]["host"], config["server"]["port"])
     match transport:
         case "tcp" | "http": 
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -166,15 +168,7 @@ def _pack_data_tcp(data: bytes, config: dict, flow: Flow):
      # fuck this 😭
     return packed
 
-"""
-GET /index.html HTTP/1.1
-Host: www.example.com
-User-Agent: curl/7.16.3
-Accept: text/html,application/xhtml+xml
-"""
-
 c = {'server': {'host': 'localhost', 'port': 2487}, 'obfuscation': {'transport': 'http', 'padding': {'min': 2, 'max': 16}, 'data': {'position': 'body', 'name': 'TU-Data', 'encrypt': True}, 'tu-data': {'position': 'header', 'name': 'TU-Cache', 'encrypt': True}, 'padding-data': {'position': 'header', 'name': 'Session', 'encrypt': True}, 'extra': {'method': 'get'}}, 'security': 'aes256', 'user': {'token': '758c3df3-38d1-4b2a-8921-cbb9fb6acc1b', 'key': '64c0e751444e37176a3c8395407ad6cf17fa5c92f273a5d9372ef88534f24adf'}}
-print(c)
 
 http_strings = (" ".join("abcdefghigklmnopqrstuvwxyzQWERTYUIOPASDFGHJKLZXCVBNM------")).split(" ")
 def _pack_data_http(send_data: bytes, config: dict, flow: Flow):
@@ -259,6 +253,8 @@ def _pack_data_http(send_data: bytes, config: dict, flow: Flow):
 
     body = body.encode()
     headers.append(("Content-Length", str(len(body))))
+
+    random.shuffle(headers)
     
     conn = h11.Connection(h11.CLIENT)
 
