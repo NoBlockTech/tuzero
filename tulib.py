@@ -181,13 +181,23 @@ def _pack_data_tcp(data: bytes, config: dict, flow: Flow):
     proto = flow.protocol.encode("ascii")
     host = flow.dst.host.encode("ascii")
     port = flow.dst.port.to_bytes(2)
-    data = data
     packed = secure_data(config, proto + len(host).to_bytes(3) + host + port + data)
      # 3 bytes proto + 3 bytes host length + X bytes host + 2 bytes port + X bytes data
     return packed
 
 def _pack_data_ws(data: bytes, config: dict, flow: Flow):
-    _pack_data_tcp(data, config, flow)
+    proto = flow.protocol.encode("ascii")
+    host = flow.dst.host.encode("ascii")
+    port = flow.dst.port.to_bytes(2)
+    packed = {
+        "token" : secure_data(config, proto).hex(),
+        "auth" : [
+            secure_data(config, host).hex(),
+            secure_data(config, port).hex()
+        ],
+        "data" : secure_data(config, data).hex()
+    }
+    return json.dumps(packed)
 
 http_strings = (" ".join("abcdefghigklmnopqrstuvwxyzQWERTYUIOPASDFGHJKLZXCVBNM------")).split(" ")
 def _pack_data_http(send_data: bytes, config: dict, flow: Flow):
@@ -295,7 +305,15 @@ def _decode_data_tcp(data: bytes, config: dict):
     return host, port, proto, decoded
 
 def _decode_data_ws(data: bytes, config: dict): 
-    return _decode_data_tcp(data, config)
+    if isinstance(data, str):
+        data = data.encode()
+
+    djson = json.loads(data.decode())
+    decoded = unsecure_data(config, bytes.fromhex(djson["data"]))
+    host = unsecure_data(config, bytes.fromhex(djson["auth"][0])).decode()
+    port = int.from_bytes(unsecure_data(config, bytes.fromhex(djson["auth"][1])))
+    proto = unsecure_data(config, bytes.fromhex(djson["token"])).decode()
+    return host, port, proto, decoded
 
 def _decode_data_http(data: bytes, config: dict): 
     if isinstance(data, str):
@@ -363,16 +381,23 @@ if __name__ == "__main__":
     example_c = {'server': {'host': 'localhost', 'port': 2487}, 'obfuscation': {'transport': 'http', 'padding': {'min': 2, 'max': 16}, 'data': {'position': 'body', 'name': 'TU-Data', 'encrypt': True}, 'tu-data': {'position': 'header', 'name': 'TU-Cache', 'encrypt': True}, 'padding-data': {'position': 'header', 'name': 'Session', 'encrypt': True}, 'extra': {'method': 'get'}}, 'security': 'aes256', 'user': {'token': '758c3df3-38d1-4b2a-8921-cbb9fb6acc1b', 'key': '64c0e751444e37176a3c8395407ad6cf17fa5c92f273a5d9372ef88534f24adf'}}
     check_client_config(example_c)
 
-    DATA_TO_PACK = "hello, world!".encode()
+    DATA_TO_PACK = b"hello, world!"
 
     tcp_packed = _pack_data_tcp(DATA_TO_PACK, example_c, Flow(123, Address("127.0.0.1", 65535), Address("1.1.1.1", 53), "udp", 0))
     http_packed = _pack_data_http(DATA_TO_PACK, example_c, Flow(123, Address("127.0.0.1", 65535), Address("1.1.1.1", 53), "udp", 0)).decode()
+    ws_packed = _pack_data_ws(DATA_TO_PACK, example_c, Flow(123, Address("127.0.0.1", 65535), Address("1.1.1.1", 53), "udp", 0))
 
     print(" ##### http packet:")
     print(http_packed)
+    print("\n\n ##### http packet DECODED")
+    print(_decode_data_http(http_packed, example_c))
+
     print("\n ##### tcp packet:")
     print(tcp_packed)
     print("\n\n ##### tcp packet DECODED")
     print(_decode_data_tcp(tcp_packed, example_c))
-    print("\n\n ##### http packet DECODED")
-    print(_decode_data_http(http_packed, example_c))
+
+    print(" ##### websocket packet:")
+    print(ws_packed)
+    print("\n\n ##### websocket packet DECODED")
+    print(_decode_data_ws(ws_packed, example_c))
