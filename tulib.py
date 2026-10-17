@@ -159,7 +159,7 @@ def connect(config):
 def disconnect(s: socket.socket | ws.ClientConnection):
     s.close()
 
-def send_data(data: bytes, config: dict, s: socket.socket | ws.ClientConnection, flow: Flow):
+def _send_data(data: bytes, config: dict, s: socket.socket | ws.ClientConnection, flow: Flow):
     to = (flow.dst.host, flow.dst.port)
     transport = suggest_transport(config)
     match transport:
@@ -172,7 +172,7 @@ def pack_data(data: bytes, config: dict, transport: str, flow: Flow):
     match transport:
         case "tcp": 
             return _pack_data_tcp(data, config, flow)
-        case "http":
+        case "http" | "tls":
             return _pack_data_http(data, config, flow)
         case "ws":
             return _pack_data_ws(data, config, flow)
@@ -231,14 +231,14 @@ def _pack_data_http(send_data: bytes, config: dict, flow: Flow):
 
     match obfs["tu-data"]["position"]:
         case "body":
-            tudt = json.dumps({"to":[flow.dst.host, flow.dst.port], "token": config["user"]["token"]})
+            tudt = json.dumps({"to":[flow.dst.host, flow.dst.port], "proto":flow.protocol, "token":config["user"]["token"]})
             if obfs["tu-data"]["encrypt"] == True:
                 tudt = secure_data(config, tudt)
             if isinstance(tudt, bytes):
                 tudt = tudt.hex()
             body[obfs["tu-data"]["name"]] = tudt
         case "header":
-            tudt = json.dumps({"to":[flow.dst.host, flow.dst.port], "token": config["user"]["token"]})
+            tudt = json.dumps({"to":[flow.dst.host, flow.dst.port], "proto":flow.protocol, "token":config["user"]["token"]})
             if obfs["tu-data"]["encrypt"] == True:
                 tudt = secure_data(config, tudt)
             if isinstance(tudt, bytes):
@@ -277,7 +277,7 @@ def decode_data(data: bytes, config: dict):
     match transport:
         case "tcp":
             return _decode_data_tcp(data, config, transport)
-        case "http":
+        case "http" | "tls":
             return _decode_data_http(data, config, transport)
         case "ws":
             return _decode_data_ws(data, config, transport)
@@ -286,13 +286,13 @@ def _decode_data_tcp(data: bytes, config: dict):
     # from _pack_data_tcp() upper
      # 3 bytes proto + 3 bytes host length + X bytes host + 2 bytes port + X bytes data
     data = unsecure_data(config, data)
-    proto = data[0:3]
+    proto = data[0:3].decode()
     hostlength = int.from_bytes(data[3:6])
-    host = data[6:hostlength+6]
+    host = data[6:hostlength+6].decode()
     port = int.from_bytes(data[hostlength+6:hostlength+8])
     decoded = data[hostlength+8:]
 
-    return proto, hostlength, host, port, decoded
+    return host, port, proto, decoded
 
 def _decode_data_ws(data: bytes, config: dict): 
     return _decode_data_tcp(data, config)
@@ -349,11 +349,15 @@ def _decode_data_http(data: bytes, config: dict):
     decoded_data = bytes.fromhex(decoded_data.decode())
 
     decoded_tudata = unsecure_data(config, decoded_tudata).decode()
-    decoded_data = unsecure_data(config, decoded_data)
+    decoded = unsecure_data(config, decoded_data)
 
     decoded_tudata = json.loads(decoded_tudata)
 
-    return decoded_data, decoded_tudata
+    host = decoded_tudata["to"][0]
+    port = decoded_tudata["to"][1]
+    proto = decoded_tudata["proto"]
+
+    return host, port, proto, decoded
 
 if __name__ == "__main__":
     example_c = {'server': {'host': 'localhost', 'port': 2487}, 'obfuscation': {'transport': 'http', 'padding': {'min': 2, 'max': 16}, 'data': {'position': 'body', 'name': 'TU-Data', 'encrypt': True}, 'tu-data': {'position': 'header', 'name': 'TU-Cache', 'encrypt': True}, 'padding-data': {'position': 'header', 'name': 'Session', 'encrypt': True}, 'extra': {'method': 'get'}}, 'security': 'aes256', 'user': {'token': '758c3df3-38d1-4b2a-8921-cbb9fb6acc1b', 'key': '64c0e751444e37176a3c8395407ad6cf17fa5c92f273a5d9372ef88534f24adf'}}
