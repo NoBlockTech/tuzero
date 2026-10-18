@@ -1,0 +1,36 @@
+{
+    "server" : {
+        "host" : "localhost",
+        "port" : 2487
+    },
+    "obfuscation" : {
+        "transport" : "http",
+        "padding" : {
+            "min" : 2,
+            "max" : 16
+        },
+        "data" : {
+            "position" : "body",
+            "name" : "TU-Data",
+            "encrypt" : true
+        },
+        "tu-data" : {
+            "position" : "header",
+            "name" : "TU-Cache",
+            "encrypt" : true
+        },
+        "padding-data" : {
+            "position" : "header",
+            "name" : "Session",
+            "encrypt" : true
+        },
+        "extra" : {
+            "method": "get"
+        }
+    },
+    "security" : "aes256",
+    "user" : {
+        "token" : "758c3df3-38d1-4b2a-8921-cbb9fb6acc1b",
+        "key" : "64c0e751444e37176a3c8395407ad6cf17fa5c92f273a5d9372ef88534f24adf"
+    }
+}

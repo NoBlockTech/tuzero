@@ -1,7 +1,6 @@
 from websockets.sync import \
     client as ws              # same as xray's ws  transport
 import socket                 # same as xray's TCP transport
-from asyncio_socks_server import Flow, Address
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import os, random
 import h11
@@ -23,7 +22,7 @@ def check_client_config(data: dict):
         if not type(data["server"]["port"]) is int: raise BADCONFIG()
         if not (0 < data["server"]["port"] < 65536): raise BADCONFIG()
         if data["obfuscation"] is not None:
-            if not isinobj(("transport", "padding", "data", "tu-data", "padding-data", "extra"), data["obfuscation"]): raise BADCONFIG()
+            if not isinobj(("transport", "padding", "data", "tu-data", "extra"), data["obfuscation"]): raise BADCONFIG()
             if data["obfuscation"]["transport"] not in ("http", "ws"): raise BADCONFIG()
             if data["obfuscation"]["padding"] is not None:
                 if not isinobj(("min", "max"), data["obfuscation"]["padding"]): raise BADCONFIG()
@@ -52,20 +51,19 @@ def check_client_config(data: dict):
     return 0
 
 def check_server_config(data: dict):
-    try:
-        if not isinobj(("listen", "obfuscation", "security", "clients"), data): raise BADCONFIG()
+        if not isinobj(("listen", "obfuscation", "security", "user"), data): raise BADCONFIG()
         if not isinobj(("host", "port"), data["listen"]): raise BADCONFIG()
         if not type(data["listen"]["host"]) is str: raise BADCONFIG()
         if not type(data["listen"]["port"]) is int: raise BADCONFIG()
         if not (0 < data["listen"]["port"] < 65536): raise BADCONFIG()
         if data["obfuscation"] is not None:
-            if not isinobj(("transport", "padding", "data", "tu-data", "padding-data", "extra"), data["obfuscation"]): raise BADCONFIG()
+            if not isinobj(("transport", "padding", "data", "tu-data", "extra"), data["obfuscation"]): raise BADCONFIG()
             if data["obfuscation"]["transport"] not in ("http", "ws"): raise BADCONFIG()
             if data["obfuscation"]["padding"] is not None:
                 if not isinobj(("min", "max"), data["obfuscation"]["padding"]): raise BADCONFIG()
                 if not type(data["obfuscation"]["padding"]["min"]) is int: raise BADCONFIG()
                 if not type(data["obfuscation"]["padding"]["max"]) is int: raise BADCONFIG()
-                if not (data["obfuscation"]["padding"]["min"] < data["obfuscation"]["padding"]["max"]): raise BADCONFIG()
+                if not (data["obfuscation"]["padding"]["min"] <= data["obfuscation"]["padding"]["max"]): raise BADCONFIG()
                 if not (data["obfuscation"]["padding"]["min"] >= 0): raise BADCONFIG()
                 if not (data["obfuscation"]["padding"]["max"] >= 0): raise BADCONFIG()
             if data["obfuscation"]["transport"] == "http":
@@ -77,20 +75,18 @@ def check_server_config(data: dict):
                 if data["obfuscation"]["tu-data"]["position"] not in ("body", "header"): raise BADCONFIG()
                 if type(data["obfuscation"]["tu-data"]["name"]) is not str: raise BADCONFIG()
                 if data["obfuscation"]["tu-data"]["encrypt"] not in (True, False): raise BADCONFIG()
-                if data["obfuscation"]["transport"] in ("http",):
+                if data["obfuscation"]["transport"] in ("http"):
                     if not isinobj(("method",), data["obfuscation"]["extra"]): raise BADCONFIG()
                     if data["obfuscation"]["extra"]["method"] not in ("post", "get", "head", "delete", "put"): raise BADCONFIG()
         if data["security"] not in (None, "aes256"): raise BADCONFIG()
-        for client in data["clients"]:
-            if not isinobj(("token", "key"), data["clients"][client]): raise BADCONFIG()
-            if not type(data["clients"][client]["token"]) is str: raise BADCONFIG()
-            if not type(data["clients"][client]["key"]) is str: raise BADCONFIG()
-    except: raise BADCONFIG()
-    return 0
+        if not isinobj(("token", "key"), data["user"]): raise BADCONFIG()
+        if not type(data["user"]["token"]) is str: raise BADCONFIG()
+        if not type(data["user"]["key"]) is str: raise BADCONFIG()
+    
+        return 0
 
 def suggest_transport(config):
     transport = "tcp"
-    check_client_config(config)
     if config["obfuscation"] is None: return transport
     return config["obfuscation"]["transport"]
 
@@ -145,51 +141,43 @@ def connect(config):
         case "tcp" | "http": 
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.connect(to)
-            s.sendall("healthz".encode())
-            if s.recv().decode() == "ok":
-                s.setblocking(False)
-                return "success", s
-            else: raise RuntimeError("server anwered incorrecly")
+            return s
         case "ws":
             s = ws.connect(f"ws://{to[0]}:{to[1]}")
-            s.send("healthz")
-            if s.recv().decode() == "ok":
-                return "success", s
-            else: raise RuntimeError("server anwered incorrecly")
+            return s
 
 def disconnect(s: socket.socket | ws.ClientConnection):
     s.close()
 
-def _send_data(data: bytes, config: dict, s: socket.socket | ws.ClientConnection, flow: Flow):
-    to = (flow.dst.host, flow.dst.port)
+def send_data(data: bytes, config: dict, s: socket.socket | ws.ClientConnection, tudata: tuple[tuple[str, int], str]):
     transport = suggest_transport(config)
     match transport:
         case "tcp" | "http": 
-            s.sendall(pack_data(data, config, transport, flow))
+            s.sendall(bytes(pack_data(data, config, transport, tudata)))
         case "ws":
-            s.send(pack_data(data, config, transport, flow))
+            s.send(str(pack_data(data, config, transport, tudata)))
 
-def pack_data(data: bytes, config: dict, transport: str, flow: Flow):
+def pack_data(data: bytes, config: dict, transport: str, tudata: tuple[tuple[str, int], str]):
     match transport:
         case "tcp": 
-            return _pack_data_tcp(data, config, flow)
+            return _pack_data_tcp(data, config, tudata)
         case "http" | "tls":
-            return _pack_data_http(data, config, flow)
+            return _pack_data_http(data, config, tudata)
         case "ws":
-            return _pack_data_ws(data, config, flow)
+            return _pack_data_ws(data, config, tudata)
 
-def _pack_data_tcp(data: bytes, config: dict, flow: Flow):
-    proto = flow.protocol.encode("ascii")
-    host = flow.dst.host.encode("ascii")
-    port = flow.dst.port.to_bytes(2)
+def _pack_data_tcp(data: bytes, config: dict, tudata: tuple[tuple[str, int], str]):
+    proto = tudata[1].encode("ascii")
+    host = tudata[0][0].encode("ascii")
+    port = tudata[0][1].to_bytes(2)
     packed = secure_data(config, proto + len(host).to_bytes(1) + host + port + data)
      # 3 bytes proto + 1 byte host length + X bytes host + 2 bytes port + X bytes data
     return packed
 
-def _pack_data_ws(data: bytes, config: dict, flow: Flow):
-    proto = flow.protocol.encode("ascii")
-    host = flow.dst.host.encode("ascii")
-    port = flow.dst.port.to_bytes(2)
+def _pack_data_ws(data: bytes, config: dict, tudata: tuple[tuple[str, int], str]):
+    proto = tudata[1].encode("ascii")
+    host = tudata[0][0].encode("ascii")
+    port = tudata[0][1].to_bytes(2)
     packed = {
         "token" : base64.urlsafe_b64encode(secure_data(config, proto)).decode().rstrip("="),
         "auth" : [
@@ -201,7 +189,7 @@ def _pack_data_ws(data: bytes, config: dict, flow: Flow):
     return json.dumps(packed, separators=(",",":"))
 
 http_strings = (" ".join("abcdefghigklmnopqrstuvwxyzQWERTYUIOPASDFGHJKLZXCVBNM------")).split(" ")
-def _pack_data_http(send_data: bytes, config: dict, flow: Flow):
+def _pack_data_http(send_data: bytes, config: dict, tudata: tuple[tuple[str, int], str]):
     random.shuffle(http_strings)
     obfs = config["obfuscation"]
 
@@ -242,14 +230,14 @@ def _pack_data_http(send_data: bytes, config: dict, flow: Flow):
 
     match obfs["tu-data"]["position"]:
         case "body":
-            tudt = json.dumps({"to":[flow.dst.host, flow.dst.port], "proto":flow.protocol, "token":config["user"]["token"]}, separators=(",",":"))
+            tudt = json.dumps({"to":tudata[0], "proto":tudata[1], "token":config["user"]["token"]}, separators=(",",":"))
             if obfs["tu-data"]["encrypt"] == True:
                 tudt = secure_data(config, tudt)
             if isinstance(tudt, bytes):
                 tudt = base64.b85encode(tudt).decode()
             body[obfs["tu-data"]["name"]] = tudt
         case "header":
-            tudt = json.dumps({"to":[flow.dst.host, flow.dst.port], "proto":flow.protocol, "token":config["user"]["token"]}, separators=(",",":"))
+            tudt = json.dumps({"to":tudata[0], "proto":tudata[1], "token":config["user"]["token"]}, separators=(",",":"))
             if obfs["tu-data"]["encrypt"] == True:
                 tudt = secure_data(config, tudt)
             if isinstance(tudt, bytes):
@@ -287,11 +275,11 @@ def decode_data(data: bytes, config: dict):
     transport = suggest_transport(config)
     match transport:
         case "tcp":
-            return _decode_data_tcp(data, config, transport)
+            return _decode_data_tcp(data, config)
         case "http" | "tls":
-            return _decode_data_http(data, config, transport)
+            return _decode_data_http(data, config)
         case "ws":
-            return _decode_data_ws(data, config, transport)
+            return _decode_data_ws(data, config)
 
 def _decode_data_tcp(data: bytes, config: dict):
     # from _pack_data_tcp() upper
@@ -391,9 +379,9 @@ if __name__ == "__main__":
 
     DATA_TO_PACK = b"hello, world!"
 
-    tcp_packed = _pack_data_tcp(DATA_TO_PACK, example_c, Flow(123, Address("127.0.0.1", 65535), Address("1.1.1.1", 53), "udp", 0))
-    http_packed = _pack_data_http(DATA_TO_PACK, example_c, Flow(123, Address("127.0.0.1", 65535), Address("1.1.1.1", 53), "udp", 0)).decode()
-    ws_packed = _pack_data_ws(DATA_TO_PACK, example_c, Flow(123, Address("127.0.0.1", 65535), Address("1.1.1.1", 53), "udp", 0))
+    tcp_packed = _pack_data_tcp(DATA_TO_PACK, example_c, (("1.1.1.1", 53), "udp"))
+    http_packed = _pack_data_http(DATA_TO_PACK, example_c, (("1.1.1.1", 53), "udp")).decode()
+    ws_packed = _pack_data_ws(DATA_TO_PACK, example_c, (("1.1.1.1", 53), "udp"))
 
     print(" ##### http packet:")
     print(http_packed)
